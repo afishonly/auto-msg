@@ -1,0 +1,68 @@
+{
+  "url": "https://monkeycode-ai.com/console/task/1786f4f5-1e38-49f2-887d-6570f9e95e50",
+  "login_url": "https://monkeycode-ai.com/login",
+  "message": "今天天气怎么样",
+  "account": "<YOUR_ACCOUNT>",
+  "password": "<YOUR_PASSWORD>",
+  "login_mode_selectors": [
+    "button:has-text('Email and Password')",
+    "a:has-text('账号密码登录')",
+    "div:has-text('账号登录')",
+    "button:has-text('账号登录')",
+    "span:has-text('密码登录')"
+  ],
+  "account_input_selectors": [
+    "input#user-email",
+    "input[type='email']",
+    "input[name='email']",
+    "input[name='mobile']",
+    "input[name='account']",
+    "input[name='username']",
+    "input[type='text']"
+  ],
+  "password_input_selectors": [
+    "input#user-password",
+    "input[type='password']",
+    "input[name='password']",
+    "input[placeholder*='密码']"
+  ],
+  "login_btn_selectors": [
+    "button:has-text('Sign in')",
+    "button:has-text('登 录')",
+    "button:has-text('登录')",
+    "button[type='submit']",
+    ".login-btn"
+  ],
+  "input_selectors": [
+    "textarea[placeholder*='Describe']",
+    "textarea[placeholder*='说点什么']",
+    "textarea[placeholder*='请输入']",
+    "textarea",
+    "[contenteditable='true']"
+  ],
+  "send_selectors": [
+    "button:has-text('Send')",
+    "button:has-text('发送')",
+    "button:has-text('发 送')",
+    "[type='submit']"
+  ],
+  "scan_selectors": [
+    "[data-login-type='wechat']",
+    ".login-scan-wechat",
+    "img[alt*='微信']",
+    "div:has-text('微信')"
+  ],
+  "headless": true,
+  "wait_after_load": 5,
+  "heartbeat_minutes": 10,
+  "send_random": true,
+  "send_window": [
+    "08:00",
+    "22:00"
+  ],
+  "send_times": [
+    "09:00"
+  ],
+  "_send_done_date": "2026-10-22",
+  "user_data_dir": "/workspace/auto_web_msg_deploy/auto_web_msg/browser_profile"
+}

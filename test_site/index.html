@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>测试聊天室（带登录）</title></head>
+<body style="font-family:sans-serif;padding:20px">
+<h2>测试聊天室（带账号密码登录）</h2>
+<div id="login_wrap">
+  <div style="margin-bottom:10px">
+    <button class="tab" data-mode="scan" style="background:#eee">扫码登录</button>
+    <button class="tab" data-mode="pwd" style="background:#fff">账号密码登录</button>
+  </div>
+  <div id="mode_scan" style="border:1px solid #ccc;width:200px;height:200px;display:block;background:#ddd">
+    这里是微信二维码占位（模拟扫码页）
+  </div>
+  <div id="mode_pwd" style="display:none">
+    <input name="mobile" placeholder="请输入手机号" style="display:block;margin:6px 0"><br>
+    <input type="password" name="password" placeholder="请输入密码" style="display:block;margin:6px 0"><br>
+    <button id="login_btn">登录</button>
+  </div>
+</div>
+<div id="chatbox" style="display:none">
+  <div id="msgbox" style="border:1px solid #ccc;min-height:120px;padding:8px;margin-bottom:12px"></div>
+  <textarea id="chat_input" placeholder="说点什么..." style="width:60%;height:60px"></textarea>
+  <button id="send_btn" style="margin-left:8px">发送</button>
+</div>
+<script>
+var tabs = document.querySelectorAll('.tab');
+tabs.forEach(function(t){
+  t.onclick = function(){
+    var m = t.getAttribute('data-mode');
+    document.getElementById('mode_scan').style.display = (m === 'scan') ? 'block' : 'none';
+    document.getElementById('mode_pwd').style.display = (m === 'pwd') ? 'block' : 'none';
+  };
+});
+function showChat(){
+  document.getElementById('login_wrap').style.display = 'none';
+  document.getElementById('chatbox').style.display = 'block';
+}
+if (localStorage.getItem('logged_in') === '1') showChat();
+document.getElementById('login_btn').onclick = function(){
+  var acc = document.querySelector('input[name=mobile]').value;
+  var pwd = document.querySelector('input[name=password]').value;
+  if (acc === '13800000000' && pwd === 'test123') {
+    localStorage.setItem('logged_in', '1');
+    showChat();
+  } else {
+    alert('账号或密码错误');
+  }
+};
+document.getElementById('send_btn').onclick = function(){
+  var v = document.getElementById('chat_input').value;
+  var t = '[' + new Date().toLocaleTimeString() + '] ' + v;
+  var box = document.getElementById('msgbox');
+  var d = document.createElement('div');
+  d.textContent = t;
+  box.appendChild(d);
+  var stored = JSON.parse(localStorage.getItem('msgs') || '[]');
+  stored.push(t);
+  localStorage.setItem('msgs', JSON.stringify(stored));
+  document.getElementById('chat_input').value = '';
+};
+</script>
+</body>
+</html>
