@@ -225,6 +225,224 @@ def wait_login(page, input_selectors, login_timeout=600, scan_selectors=None):
     return False
 
 
+
+# ---------------- 每日签到（MonkeyCode 每日签到 +100 积分） ----------------
+# 实测（2026-11-11，2733/1668 控制台）：
+# - 状态接口 GET  /api/v1/users/wallet/checkin -> {"code":0,"data":{"checked_in":bool}}（页面内 fetch，带登录 cookie，免验证码）
+# - 余额接口 GET  /api/v1/users/wallet -> data.balance（原始单位，界面显示 = round(balance/1000)，如 1436645 -> 1,437）
+# - 领取接口 POST /api/v1/users/wallet/checkin 需要 captcha_token，必须走页面按钮自带流程点击，不直调 POST。
+# - 未签到时：控制台外壳有琥珀色按钮「Check in for credits / 签到领积分」；钱包弹窗「My credits / 我的积分」页
+#   亦有「Check in for 100 credits / 签到领 100 积分」按钮。已签到时按钮不渲染。
+CHECKIN_URLS = []  # 历史直达 URL 方案已废弃（均重定向首页），保留配置键兼容
+CHECKIN_DONE_WORDS = ["今日已签到", "已签到", "Checked in today", "已领取"]
+CHECKIN_TODO_WORDS = ["签到领 100 积分", "签到领积分", "Check in for 100 credits", "Check in for credits", "立即签到", "签到"]
+
+
+def _save_cfg(cfg):
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as _f:
+            json.dump(cfg, _f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"[配置] 写回失败: {e}")
+        return False
+
+
+def _mc_api(page, path, method="GET", body=None):
+    """在页面上下文调用 MonkeyCode 官方 API（自动带登录 cookie）。返回解析后的 dict 或 None。"""
+    try:
+        return page.evaluate(
+            """async ([path, method, body]) => {
+              try {
+                const opts = {method, headers: {'Accept': 'application/json'}};
+                if (body !== null && body !== undefined) {
+                  opts.headers['Content-Type'] = 'application/json';
+                  opts.body = JSON.stringify(body);
+                }
+                const r = await fetch(path, opts);
+                const t = await r.text();
+                try { return {status: r.status, json: JSON.parse(t)}; }
+                catch (e) { return {status: r.status, text: t.slice(0, 300)}; }
+              } catch (e) { return {error: String(e)}; }
+            }""",
+            [path, method, body],
+        )
+    except Exception as e:
+        print(f"[签到] API 调用异常 {path}: {e}")
+        return None
+
+
+def _wallet_state(page):
+    """返回 (checked_in True/False/None, balance_raw, balance_display)。"""
+    checked = None
+    r = _mc_api(page, "/api/v1/users/wallet/checkin")
+    if r and r.get("json") and r["json"].get("code") == 0:
+        checked = bool(r["json"].get("data", {}).get("checked_in"))
+    bal_raw = None
+    r2 = _mc_api(page, "/api/v1/users/wallet")
+    if r2 and r2.get("json") and r2["json"].get("code") == 0:
+        b = r2["json"].get("data", {}).get("balance")
+        if isinstance(b, (int, float)):
+            bal_raw = int(b)
+    bal_disp = int(round(bal_raw / 1000.0)) if bal_raw is not None else None
+    return checked, bal_raw, bal_disp
+
+
+def _read_balance(page):
+    """兜底：从页面文本读余额显示值（API 不可用时用）。"""
+    try:
+        v = page.evaluate(r"""() => {
+              const text = document.body ? document.body.innerText : '';
+              let m = text.match(/Current credits\s*\n?\s*(\d[\d,]*)/i);
+              if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+              m = text.match(/(?:积分|credits?|balance)[^\d]{0,16}(\d[\d,]*)/i);
+              if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+              m = text.match(/(\d[\d,]*)\s*(?:积分|credits?)/i);
+              if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+              return null;
+            }""")
+        return v
+    except Exception:
+        return None
+
+
+def _find_checkin_button(page):
+    """在当前页面/弹窗中找未签到按钮，返回 (locator, 文案) 或 (None, None)。"""
+    for w in CHECKIN_TODO_WORDS:
+        try:
+            loc = page.get_by_text(w, exact=False)
+            n = loc.count()
+            for i in range(n):
+                cand = loc.nth(i)
+                try:
+                    if cand.is_visible(timeout=500):
+                        return cand, w
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return None, None
+
+
+def _captcha_present(page):
+    try:
+        return bool(page.evaluate("""() => {
+          const ifr = Array.from(document.querySelectorAll('iframe')).some(f => /captcha|geetest|turnstile|recaptcha|hcaptcha/i.test(f.src || ''));
+          if (ifr) return true;
+          const t = document.body ? document.body.innerText : '';
+          return /滑动.*验证|拖动.*滑块|完成拼图|Verify you are human|安全验证/.test(t);
+        }"""))
+    except Exception:
+        return False
+
+
+def _open_wallet_checkin(page):
+    """打开钱包弹窗并切到 My credits 页（签到区所在页）。成功返回 True。"""
+    # 1) 点侧栏底部账号块，打开 My account 弹窗（账号块含套餐名 Basic/Free/Pro/Ultra 等）
+    opened = False
+    for plan in ["Basic", "Free", "Pro", "Ultra", "Lite"]:
+        try:
+            blk = page.locator("button").filter(has_text=plan).last
+            if not blk.count():
+                blk = page.locator("div, button, a").filter(has_text=plan).last
+            if blk.count():
+                blk.click(timeout=2500)
+                time.sleep(2)
+                opened = True
+                break
+        except Exception:
+            continue
+    if not opened:
+        print("[签到] 打开账号弹窗失败: 未找到账号块")
+        return False
+    # 2) 点 Credit bill / 积分账单，打开 Wallet 弹窗
+    clicked = False
+    for label in ["Credit bill", "积分账单", "My credits", "我的积分"]:
+        try:
+            loc = page.get_by_text(label, exact=False).last
+            if loc.count() and loc.is_visible(timeout=800):
+                loc.click(timeout=2500)
+                clicked = True
+                time.sleep(2.5)
+                break
+        except Exception:
+            continue
+    if not clicked:
+        print("[签到] 钱包入口未找到")
+        return False
+    # 3) 切到 My credits / 我的积分 标签
+    for label in ["My credits", "我的积分"]:
+        try:
+            loc = page.get_by_text(label, exact=True).first
+            if loc.count() and loc.is_visible(timeout=800):
+                loc.click(timeout=2500)
+                time.sleep(2)
+                break
+        except Exception:
+            continue
+    return True
+
+
+def do_checkin(page, cfg):
+    """执行每日签到。page 为独立标签页。返回 True=今日已签（含本来已签）。"""
+    print("[签到] 开始：打开控制台并查询签到状态")
+    try:
+        page.goto("https://monkeycode-ai.com/console/tasks", timeout=45000, wait_until="domcontentloaded")
+        page.wait_for_load_state("domcontentloaded")
+    except Exception as e:
+        print(f"[签到] 打开控制台失败: {e}")
+        return False
+    time.sleep(3)
+    dismiss_overlays(page)
+
+    checked, bal_raw0, bal_disp0 = _wallet_state(page)
+    print(f"[签到] 初始状态 checked_in={checked} 余额={bal_disp0} (raw={bal_raw0}) url={page.url}")
+    if checked is True:
+        print("[签到] 今日已签到（API 状态），无需重复点击")
+        return True
+    if checked is None:
+        shot = screenshot(page, "checkin_api_unknown")
+        print(f"[签到] 状态接口不可用，截图存档: {shot}，本轮不点")
+        return False
+
+    # 未签到：先找外壳签到按钮，没有再走钱包弹窗
+    btn, word = _find_checkin_button(page)
+    if btn is None:
+        print("[签到] 外壳未见签到按钮，打开钱包弹窗找签到区")
+        if _open_wallet_checkin(page):
+            btn, word = _find_checkin_button(page)
+    if btn is None:
+        shot = screenshot(page, "checkin_button_missing")
+        print(f"[签到] 未找到签到按钮，截图存档: {shot}")
+        return False
+
+    print(f"[签到] 点击签到按钮（文案匹配: {word}）")
+    try:
+        btn.click(timeout=4000)
+    except Exception as e:
+        print(f"[签到] 点击失败: {e}")
+        return False
+
+    # 轮询状态（含验证码等待窗口）
+    captcha_seen = False
+    for i in range(10):
+        time.sleep(2.5)
+        if _captcha_present(page):
+            captcha_seen = True
+        checked2, bal_raw1, bal_disp1 = _wallet_state(page)
+        if checked2 is True:
+            delta = (bal_raw1 - bal_raw0) if (bal_raw1 is not None and bal_raw0 is not None) else None
+            print(f"[签到] 签到成功：余额 {bal_disp0} -> {bal_disp1} (raw 增量={delta})")
+            return True
+    if captcha_seen:
+        shot = screenshot(page, "checkin_captcha")
+        print(f"[签到] 出现验证码/滑块，未硬闯，截图存档: {shot}，本轮放弃")
+        return False
+    shot = screenshot(page, "checkin_not_confirmed")
+    print(f"[签到] 点击后状态未确认（checked_in 仍为 False），截图存档: {shot}")
+    return False
+
+
 def find_target(page, input_selectors, frame):
     if frame is None:
         try:
@@ -322,6 +540,9 @@ def main():
     send_random = cfg.get("send_random", True)
     send_window = cfg.get("send_window", ["08:00", "22:00"])
     send_done_date = cfg.get("_send_done_date", None)
+    checkin_enabled = cfg.get("checkin_enabled", True)
+    checkin_done_date = cfg.get("_checkin_done_date", None)
+    checkin_next_try = 0.0
     heartbeat_done = 0.0
 
     def pick_send_time():
@@ -345,6 +566,7 @@ def main():
             user_data_dir=user_data_dir,
             headless=headless,
             args=["--disable-blink-features=AutomationControlled"],
+            **({"proxy": {"server": cfg["proxy_server"]}} if cfg.get("use_proxy") and cfg.get("proxy_server") else {}),
         )
         page = context.pages[0] if context.pages else context.new_page()
         frame = None
@@ -398,14 +620,39 @@ def main():
                         if sent_today:
                             send_done_date = today
                             cfg["_send_done_date"] = today
-                            try:  # FIX: persist to config.json to avoid duplicate send after restart
-                                with open(CONFIG_PATH, "w", encoding="utf-8") as _f:
-                                    json.dump(cfg, _f, ensure_ascii=False, indent=2)
+                            if _save_cfg(cfg):
                                 print(f"[配置] 已写回 _send_done_date={today}")
-                            except Exception as _e:
-                                print(f"[配置] 写回失败: {_e}")
                             target_time = None
                             sent_today = False
+
+                # 每日签到：与发消息平行，独立防重复；用独立标签页执行，不扰动任务页
+                if checkin_enabled and checkin_done_date != today and time.time() >= checkin_next_try:
+                    cpage = None
+                    try:
+                        cpage = context.new_page()
+                        ok = do_checkin(cpage, cfg)
+                    except Exception as e:
+                        print(f"[签到] 异常: {e}")
+                        if cpage is not None:
+                            try:
+                                save_debug(cpage, "checkin_fail")
+                            except Exception:
+                                pass
+                        ok = False
+                    finally:
+                        if cpage is not None:
+                            try:
+                                cpage.close()
+                            except Exception:
+                                pass
+                    if ok:
+                        checkin_done_date = today
+                        cfg["_checkin_done_date"] = today
+                        if _save_cfg(cfg):
+                            print(f"[签到] 今日完成，已写回 _checkin_done_date={today}")
+                    else:
+                        checkin_next_try = time.time() + heartbeat_minutes * 60
+                        print("[签到] 本轮未完成，下个心跳周期重试")
 
                 if time.time() - heartbeat_done >= heartbeat_minutes * 60:
                     try:

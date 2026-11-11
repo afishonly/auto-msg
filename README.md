@@ -6,6 +6,7 @@
 
 - **保活**：每 `heartbeat_minutes`（默认 10 分钟）刷新一次页面，保持浏览器会话在线。
 - **每日发消息**：在 `send_window` 时间窗内，每天自动发送一条消息（默认内容见 `config.example.json` 的 `message`），保持账号活跃。
+- **每日签到**（可选）：每天自动完成 MonkeyCode 每日签到，领取 100 积分。
 
 > 原始场景：在 MonkeyCode 容器里用一个常驻的 Playwright 浏览器实例打开目标站点，
 > 既防止会话掉线，也通过每日一条消息维持账号活跃度。
@@ -41,6 +42,24 @@ cp config.example.json config.json
 - `send_random` / `send_times`：是否随机内容 / 发送次数配置
 - `user_data_dir`：浏览器用户数据目录（保持登录态）
 - `*_selectors`：页面元素选择器，按需调整
+- `checkin_enabled`：每日签到开关（默认 `true`，设为 `false` 关闭）
+- `_checkin_done_date`：签到防重复标记，由程序写回，**不要手改**（与 `_send_done_date` 相互独立）
+- `proxy_server` + `use_proxy`：仅当部署环境需要走代理出网时，设置 `proxy_server` 并把 `use_proxy` 设为 `true`；默认直连（沙箱部署 config 里即使留有 `proxy_server` 字段也不会生效）
+
+## 每日签到
+
+主循环里与「每日发消息」平行的一条独立逻辑（独立标签页执行，不扰动任务页与发消息流程）：
+
+1. **查状态**：在页面上下文用官方接口 `GET /api/v1/users/wallet/checkin` 查今日是否已签
+   （自动带浏览器登录 cookie），同时 `GET /api/v1/users/wallet` 读积分余额原始值
+   （界面显示积分 = `round(balance / 1000)`）。
+2. **已签到**：直接记录完成，不重复点击（重复签到无收益且可能触发风控）。
+3. **未签到**：点击页面上的签到按钮——控制台外壳的「Check in for credits / 签到领积分」，
+   或钱包弹窗「My credits / 我的积分」页的「Check in for 100 credits / 签到领 100 积分」。
+   领取接口需要验证码 token，只能走页面按钮自带的验证码流程，**不直调领取接口**；
+   若出现滑块/拼图类验证码，程序截图存 `debug/` 后本轮放弃、下一心跳周期重试，不硬闯。
+4. **校验**：点击后轮询状态接口翻为 `checked_in=true` 且余额增加 100（原始值 +100000）才判成功，
+   成功后把 `_checkin_done_date` 写回 `config.json` 防重复；失败按心跳周期重试。
 
 ## 运行
 

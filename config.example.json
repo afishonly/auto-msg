@@ -64,5 +64,7 @@
     "09:00"
   ],
   "_send_done_date": "2026-10-22",
+  "checkin_enabled": true,
+  "_checkin_done_date": "2026-10-22",
   "user_data_dir": "/workspace/auto_web_msg_deploy/auto_web_msg/browser_profile"
 }
